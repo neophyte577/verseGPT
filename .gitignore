@@ -1,0 +1,4 @@
+__pycache__/
+commands.sh
+venv/
+out/
