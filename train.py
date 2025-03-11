@@ -1,14 +1,15 @@
 import os
-import time
-import math
+import shutil
 import torch
-import torch.optim as optim
 import torch.backends.cudnn as cudnn
-from torch.utils.data import DataLoader
 from contextlib import nullcontext
 from model import GPT, GPTConfig
 from lion_pytorch import Lion
 import tiktoken
+
+# use GPU if available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+use_amp = torch.cuda.is_available()  
 
 out_dir = 'out'
 eval_interval = 1000
@@ -26,11 +27,12 @@ early_stopping_patience = 5
 n_embd = 256
 n_layer = 4
 n_head = 4
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 torch.manual_seed(1337)
 if torch.cuda.is_available():
-    cudnn.benchmark = True
+    cudnn.benchmark = True  
+
+torch.set_num_threads(torch.get_num_threads() * 4)
 
 def load_data():
     with open('data/tiny_shakespeare.txt', 'r', encoding='utf-8') as f:
@@ -49,7 +51,8 @@ config = GPTConfig(vocab_size=vocab_size, block_size=block_size, n_embd=n_embd, 
 model = GPT(config).to(device)
 model.apply(model._init_weights)
 optimizer = Lion(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-scaler = torch.cuda.amp.GradScaler()
+
+scaler = torch.amp.GradScaler("cuda") if use_amp else None
 
 def get_batch(data):
     ix = torch.randint(len(data) - block_size, (batch_size,))
@@ -74,21 +77,32 @@ def train():
         for iter in range(max_iters):
             model.train()
             optimizer.zero_grad()
-            
-            with torch.cuda.amp.autocast():
+
+            # conditional AMP usage
+            with torch.amp.autocast("cuda") if use_amp else nullcontext():
                 for _ in range(gradient_accumulation_steps):
                     x, y = get_batch(data)
+                    x, y = x.to(device), y.to(device)  
                     _, loss = model(x, y)
                     loss = loss / gradient_accumulation_steps
-                    scaler.scale(loss).backward()
-            
+                    if use_amp:
+                        scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
-            
+
+            # apply optimizer step conditionally based on AMP usage
+            if use_amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+
             if iter % log_interval == 0:
                 print(f"Iter {iter}: Train Loss {loss.item():.4f}")
-            
+
+            # periodic evaluation
             if iter % eval_interval == 0 and iter > 0:
                 val_loss = evaluate()
                 print(f"Iter {iter}: Val Loss {val_loss:.4f}")
@@ -103,11 +117,17 @@ def train():
                     if patience >= early_stopping_patience:
                         print("Early stopping triggered.")
                         break
+                    
     except KeyboardInterrupt:
-        print("Training interrupted. Saving model...")
+        print("Training interrupted. Saving latest model as best checkpoint...")
         os.makedirs(out_dir, exist_ok=True)
-        torch.save(model.state_dict(), os.path.join(out_dir, 'verseGPT_interrupted.pth'))
-        print("Model saved.")
+        torch.save(model.state_dict(), os.path.join(out_dir, 'verseGPT_best.pth'))
+        print("Model saved as verseGPT_best.pth.")
 
 if __name__ == "__main__":
+
+    if os.path.exists('./out'):
+        shutil.rmtree('./out')
+        os.mkdir('out')
+
     train()

@@ -1,4 +1,3 @@
-import os
 import torch
 import argparse
 import tiktoken
@@ -11,7 +10,7 @@ def load_tokenizer():
     itos = {i: i for i in range(vocab_size)}
     return stoi, itos, enc
 
-def generate_text(model, stoi, itos, enc, prompt="To be, or not to be", max_tokens=200, temperature=0.7, top_k=40):
+def generate_text(model, stoi, itos, enc, prompt="Forsooth, artificial intelligence hath not", max_tokens=200, temperature=0.7, top_k=40):
     model.eval()
     device = next(model.parameters()).device
     input_ids = torch.tensor(enc.encode(prompt), dtype=torch.long).unsqueeze(0).to(device)

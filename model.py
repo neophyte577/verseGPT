@@ -3,15 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class GPTConfig:
-    def __init__(self, vocab_size, block_size, n_embd=128, n_layer=2, n_head=2, dropout=0.1):
-        self.vocab_size = vocab_size
-        self.block_size = block_size
-        self.n_embd = n_embd
-        self.n_layer = n_layer
-        self.n_head = n_head
-        self.dropout = dropout
-
 class LayerNorm(nn.Module):
     def __init__(self, ndim, bias=True):
         super().__init__()
@@ -35,8 +26,12 @@ class CausalSelfAttention(nn.Module):
         B, T, C = x.shape
         qkv = self.qkv_proj(x).chunk(3, dim=-1)
         q, k, v = [t.view(B, T, self.n_head, self.head_dim).transpose(1, 2) for t in qkv]
+
         attn_weights = (q @ k.transpose(-2, -1)) * self.scale
-        attn_weights = attn_weights.masked_fill(torch.triu(torch.ones(T, T), 1) == 1, float('-inf'))
+        
+        mask = torch.triu(torch.ones(T, T, device=attn_weights.device), diagonal=1).bool()
+        attn_weights = attn_weights.masked_fill(mask, float('-inf'))
+
         attn_weights = F.softmax(attn_weights, dim=-1)
         attn_weights = self.dropout(attn_weights)
         attn_output = (attn_weights @ v).transpose(1, 2).contiguous().view(B, T, C)
@@ -65,6 +60,15 @@ class Block(nn.Module):
         x = x + self.attn(self.ln1(x))
         x = x + self.mlp(self.ln2(x))
         return x
+    
+class GPTConfig:
+    def __init__(self, vocab_size, block_size, n_embd=128, n_layer=2, n_head=2, dropout=0.1):
+        self.vocab_size = vocab_size
+        self.block_size = block_size
+        self.n_embd = n_embd
+        self.n_layer = n_layer
+        self.n_head = n_head
+        self.dropout = dropout
 
 class GPT(nn.Module):
     def __init__(self, config):
@@ -87,11 +91,17 @@ class GPT(nn.Module):
     
     def forward(self, idx, targets=None):
         B, T = idx.shape
+
+        device = idx.device
+        pos_indices = torch.arange(T, device=device) 
+
         tok_emb = self.token_embedding(idx)
-        pos_emb = self.position_embedding(torch.arange(T, device=idx.device) % self.position_embedding.num_embeddings)
+        pos_emb = self.position_embedding(pos_indices % self.position_embedding.num_embeddings)
         x = self.dropout(tok_emb + pos_emb)
+
         for block in self.blocks:
             x = block(x)
+        
         x = self.ln_final(x)
         logits = self.lm_head(x)
         
